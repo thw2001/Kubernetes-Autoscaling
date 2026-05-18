@@ -1,0 +1,187 @@
+---
+- name: 准备所有节点（通用任务）
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: 设置主机名
+      hostname:
+        name: "{{ hostname }}"
+    
+    - name: 创建 k3s 配置目录
+      file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+    
+    - name: 配置容器镜像加速器（containerd）
+      copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        content: |
+          mirrors:
+            docker.io:
+              endpoint:
+                - "https://uim3uotopwxkhcj2a2.xuanyuan.run"
+                - "https://docker.m.daocloud.io"
+            k8s.gcr.io:
+              endpoint:
+                - "https://uim3uotopwxkhcj2a2-k8s.xuanyuan.run"
+                - "https://k8s-gcr.m.daocloud.io"
+            registry.k8s.io:
+              endpoint:
+                - "https://uim3uotopwxkhcj2a2-k8s.xuanyuan.run"              
+                - "https://k8s.m.daocloud.io"        
+            gcr.io:
+              endpoint:
+                - "https://uim3uotopwxkhcj2a2-gcr.xuanyuan.run"  
+                - "https://gcr.m.daocloud.io"                             
+            ghcr.io:
+              endpoint:
+                - "https://uim3uotopwxkhcj2a2-ghcr.xuanyuan.run"  
+                - "https://ghcr.m.daocloud.io"                 
+            quay.io:
+              endpoint:
+                - "https://uim3uotopwxkhcj2a2-quay.xuanyuan.run"  
+                - "https://quay.m.daocloud.io"             
+        mode: '0644'
+    
+    - name: 关闭防火墙（可选）
+      systemd:
+        name: ufw
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+- name: 安装 k3s Master 节点
+  hosts: k3s_master
+  become: yes
+  tasks:
+    - name: 安装 k3s server
+      shell: |
+        curl -sfL https://rancher-mirror.rancher.cn/k3s/k3s-install.sh | \
+        INSTALL_K3S_MIRROR=cn \
+        INSTALL_K3S_EXEC="--disable=traefik" \
+        sh -
+      args:
+        creates: /usr/local/bin/k3s
+    
+    - name: 等待 k3s API 就绪
+      shell: k3s kubectl wait --for=condition=Ready nodes --all --timeout=120s
+      register: wait_result
+      until: wait_result is success
+      retries: 12
+      delay: 10
+      changed_when: false
+    
+    - name: 获取节点 token
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_content
+      changed_when: false
+    
+    - name: 将 token 和 Master IP 存入 facts
+      set_fact:
+        k3s_token: "{{ k3s_token_content.content | b64decode | trim }}"
+        master_ip: "{{ ansible_host }}"
+        cacheable: yes
+
+- name: 安装 k3s Worker 节点
+  hosts: k3s_worker
+  become: yes
+  tasks:
+    - name: 获取 Master 节点的 IP 和 token
+      set_fact:
+        master_ip: "{{ hostvars[groups['k3s_master'][0]]['master_ip'] }}"
+        master_token: "{{ hostvars[groups['k3s_master'][0]]['k3s_token'] }}"
+    
+    - name: 安装 k3s agent
+      shell: |
+        curl -sfL https://rancher-mirror.rancher.cn/k3s/k3s-install.sh | \
+        INSTALL_K3S_MIRROR=cn \
+        K3S_URL=https://{{ master_ip }}:6443 \
+        K3S_TOKEN={{ master_token }} \
+        sh -
+      args:
+        creates: /usr/local/bin/k3s
+
+- name: 安装 Helm
+  hosts: k3s_master
+  become: yes
+  tasks:
+    - name: 创建临时目录
+      file:
+        path: /tmp/helm_install
+        state: directory
+        mode: '0755'
+
+    - name: 上传本地 helm 压缩包到服务器
+      copy:
+        src: ./helm-v4.1.4-linux-amd64.tar.gz
+        dest: /tmp/helm_install/helm.tar.gz
+        mode: '0644'
+
+    - name: 解压 helm 二进制文件
+      unarchive:
+        src: /tmp/helm_install/helm.tar.gz
+        dest: /tmp/helm_install/
+        remote_src: yes
+        creates: /tmp/helm_install/linux-amd64/helm
+
+    - name: 移动 helm 到 /usr/local/bin
+      copy:
+        src: /tmp/helm_install/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        mode: '0755'
+        remote_src: yes
+
+    - name: 清理临时目录
+      file:
+        path: /tmp/helm_install
+        state: absent
+
+- name: 部署 Prometheus 监控栈
+  hosts: k3s_master
+  tasks:
+    - name: 添加 prometheus-community Helm 仓库
+      command: helm repo add prometheus-community https://helm-charts.itboon.top/prometheus-community --force-update
+      args:
+        creates: /root/.cache/helm/repository/prometheus-community-index.yaml
+
+    - name: 更新 Helm 仓库
+      command: helm repo update
+
+    - name: 安装 kube-prometheus-stack
+      command: >
+        helm upgrade --install monitoring prometheus-community/kube-prometheus-stack
+        --namespace monitoring --create-namespace
+        --set grafana.adminPassword=admin
+        --set prometheus.prometheusSpec.resources.requests.memory=2Gi
+        --set prometheus.prometheusSpec.scrapeInterval=10s
+        --set prometheus.prometheusSpec.retention=7d
+        --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.accessModes[0]=ReadWriteOnce
+        --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=50Gi
+        --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.storageClassName=local-path
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+      register: helm_install
+      until: helm_install is success
+      retries: 3
+      delay: 10
+
+- name: 安装 Python 依赖
+  hosts: k3s_master
+  become: yes
+  tasks:
+    - name: 确保 pip3 已安装
+      apt:
+        name: python3-pip
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: 安装所需的 Python 包
+      pip:
+        name:
+          - kubernetes
+          - pyyaml
+          - schedule
+        executable: pip3
+        state: present
