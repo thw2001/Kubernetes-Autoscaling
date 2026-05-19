@@ -1,0 +1,23 @@
+lstm:
+  window_size: 20
+  epochs: 50
+  learning_rate: 0.001
+  hidden_size: 64
+  mc_dropout_samples: 20
+
+reward:
+  alpha: 1.0
+  beta: 0.2
+  gamma: 0.1
+  eta: 0.05
+
+dqn:
+  learning_rate: 0.0001
+  gamma: 0.98
+  batch_size: 64
+  buffer_size: 100000
+  total_timesteps: 200000
+
+controller:
+  decision_interval: 30
+  deployment_name: myapp
