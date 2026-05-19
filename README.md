@@ -1,7 +1,7 @@
 # Intelligent Proactive Autoscaling for Kubernetes  
 # 面向 Kubernetes 的智能主动式弹性伸缩系统
 
-本项目是一个**研究导向（research-oriented）**的 Kubernetes 主动式弹性伸缩实现，融合以下核心技术：
+本项目是一个 **研究导向（research-oriented）** 的 Kubernetes 主动式弹性伸缩实现，融合以下核心技术：
 
 - **LSTM 负载预测（Workload Prediction）**
 - **MC Dropout 不确定性估计（Uncertainty Estimation）**
@@ -48,7 +48,7 @@ Kubernetes 默认的 **Horizontal Pod Autoscaler (HPA)** 属于**被动式（Rea
                 │   + MC Dropout       │
                 └──────────┬───────────┘
                            │
-                  (μ, σ, risk)
+                    (μ, σ, risk)
                            │
                            ▼
                 ┌──────────────────────┐
@@ -112,9 +112,9 @@ predictor/train_lstm.py
 - 预测未来一段时间的系统负载；
 - 输出预测值：
 
-\[
+$$
 \mu_t
-\]
+$$
 
 输入特征包括：
 
@@ -155,41 +155,38 @@ predictor/predictor.py
 
 > 利用 Monte Carlo Dropout 对预测结果进行不确定性建模。
 
-方法：
-
 对同一输入进行多次随机前向传播：
 
-\[
-\{y_1,y_2,...,y_N\}
-\]
+$$
+\{y_1,y_2,\dots,y_N\}
+$$
 
-计算：
+计算预测均值：
 
-预测均值：
+$$
+\mu=\frac{1}{N}\sum_{i=1}^{N} y_i
+$$
 
-\[
-\mu=\frac{1}{N}\sum y_i
-\]
+计算预测标准差：
 
-预测标准差：
-
-\[
-\sigma=\sqrt{
+$$
+\sigma=
+\sqrt{
 \frac{1}{N}
-\sum (y_i-\mu)^2
+\sum_{i=1}^{N}(y_i-\mu)^2
 }
-\]
+$$
 
 定义风险指标：
 
-\[
+$$
 Risk=\frac{\sigma}{\mu}
-\]
+$$
 
-其中：
+解释：
 
-- σ 越大 → 预测越不稳定；
-- Risk 越高 → RL 决策应更加保守。
+- $\sigma$ 越大 → 预测越不稳定；
+- $Risk$ 越高 → RL 决策应更加保守。
 
 ---
 
@@ -203,16 +200,18 @@ simulator/autoscaling_env.py
 
 状态空间：
 
-\[
+$$
 s_t=
-(cpu,
-mem,
-qps,
-replicas,
-\mu,
-\sigma,
-risk)
-\]
+(
+cpu_t,
+mem_t,
+qps_t,
+replicas_t,
+\mu_t,
+\sigma_t,
+risk_t
+)
+$$
 
 分别表示：
 
@@ -238,24 +237,33 @@ risk)
 
 奖励函数：
 
-\[
+$$
 R_t=
 -\alpha D_t
 -\beta C_t
 -\gamma O_t
 -\eta Risk_t
-\]
+$$
 
 其中：
 
-- \(D_t\)：性能惩罚（延迟）
-- \(C_t\)：资源成本（Pod 数）
-- \(O_t\)：震荡惩罚（频繁伸缩）
-- \(Risk_t\)：预测风险惩罚
+- $D_t$：性能惩罚（延迟）
+- $C_t$：资源成本（Pod 数）
+- $O_t$：震荡惩罚（频繁伸缩）
+- $Risk_t$：预测风险惩罚
 
-目标：
+优化目标：
 
-> 最大化长期累计奖励。
+> 最大化长期累计奖励：
+
+$$
+\max
+\mathbb{E}
+\left[
+\sum_{t=0}^{\infty}
+\gamma^{t}R_t
+\right]
+$$
 
 ---
 
@@ -279,9 +287,11 @@ rl/train_dqn.py
 
 学习最优扩缩容策略：
 
-\[
+$$
 \pi^*(s)
-\]
+=
+\arg\max_a Q(s,a)
+$$
 
 训练输出：
 
@@ -327,17 +337,17 @@ controller/autoscaling_controller.py
 
 得到：
 
-```text
-μ, σ
-```
+$$
+(\mu,\sigma)
+$$
 
 ---
 
 ### Step 4：构造 RL 状态
 
-```text
-(cpu, mem, qps, pod, μ, σ, risk)
-```
+$$
+(cpu, mem, qps, pod, \mu, \sigma, risk)
+$$
 
 ---
 
@@ -363,9 +373,7 @@ kubectl scale deployment ...
 
 # 5. 环境安装
 
----
-
-## 安装依赖
+安装依赖：
 
 ```bash
 pip install -r requirements.txt
@@ -433,9 +441,7 @@ controller:
 
 # 8. 实验运行流程
 
----
-
-## Step 1：训练 LSTM
+### Step 1：训练 LSTM
 
 ```bash
 python predictor/train_lstm.py
@@ -449,7 +455,7 @@ lstm_model.pt
 
 ---
 
-## Step 2：训练 RL Agent
+### Step 2：训练 RL Agent
 
 ```bash
 python rl/train_dqn.py
@@ -463,7 +469,7 @@ dqn_agent.zip
 
 ---
 
-## Step 3：启动在线控制器
+### Step 3：启动在线控制器
 
 ```bash
 python controller/autoscaling_controller.py
